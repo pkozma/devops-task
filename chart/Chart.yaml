@@ -1,0 +1,5 @@
+apiVersion: v2
+name: helloapp
+description: Hello World Flask application
+type: application
+version: 0.1.0
