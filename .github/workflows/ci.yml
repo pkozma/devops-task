@@ -1,0 +1,70 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: docker build --target test .
+
+      - name: Build
+        run: docker build -t "${{ steps.image.outputs.name }}:$GITHUB_SHA" .
+
+      - name: Push
+        if: github.event_name == 'push'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "${{ steps.image.outputs.name }}:$GITHUB_SHA"
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create kind cluster
+        run: kind create cluster --wait 2m
+
+      - name: Create image pull secret
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          kubectl create secret docker-registry ghcr
+          --docker-server=ghcr.io
+          --docker-username="$GITHUB_ACTOR"
+          --docker-password="$TOKEN"
+
+      - name: Deploy
+        run: >
+          helm upgrade --install helloapp ./chart
+          --set image.repository="${{ needs.build.outputs.image }}"
+          --set image.tag="$GITHUB_SHA"
+          --set "imagePullSecrets[0].name=ghcr"
+          --wait --atomic --timeout 3m
+
+      - name: Smoke test
+        run: helm test helloapp --logs
